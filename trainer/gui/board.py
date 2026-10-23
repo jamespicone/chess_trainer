@@ -5,7 +5,7 @@ from __future__ import annotations
 import chess
 import chess.svg
 from PySide6.QtCore import QAbstractAnimation, QByteArray, QEasingCurve, QPointF, QRectF, QSize, Qt, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QCursor, QIcon, QPainter, QPalette, QPen, QPixmap, QRadialGradient
+from PySide6.QtGui import QColor, QCursor, QIcon, QPainter, QPalette, QPen, QPixmap, QPolygonF, QRadialGradient
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QMenu, QSizePolicy, QWidget
 
@@ -16,6 +16,8 @@ WRONG_MOVE = QColor(220, 50, 50, 140)
 SELECTED = QColor(20, 85, 30, 110)
 TARGET = QColor(20, 85, 30, 90)
 CHECK = QColor(255, 0, 0, 200)
+ARROW = QColor(21, 120, 27, 170)
+HINT_SQUARE = QColor(30, 110, 220, 120)
 
 ANIMATION_MS = 180
 
@@ -34,6 +36,8 @@ class BoardWidget(QWidget):
         self.last_move_wrong = False
         self.selected: chess.Square | None = None
         self.drag_pos: QPointF | None = None  # where a dragged piece is drawn
+        self.arrow: chess.Move | None = None  # a move to show you
+        self.hint_square: chess.Square | None = None  # a square to point out
 
         # python-chess comes with SVG pieces, so there are no image files to ship.
         self._pieces = {
@@ -70,6 +74,12 @@ class BoardWidget(QWidget):
 
     def set_orientation(self, color: chess.Color) -> None:
         self.orientation = color
+        self.update()
+
+    def set_guides(self, arrow: chess.Move | None = None, square: chess.Square | None = None) -> None:
+        """Draw an arrow for a move and/or highlight a square, e.g. for a hint."""
+        self.arrow = arrow
+        self.hint_square = square
         self.update()
 
     def set_user_color(self, color: chess.Color | None) -> None:
@@ -128,6 +138,9 @@ class BoardWidget(QWidget):
             for square in (self.last_move.from_square, self.last_move.to_square):
                 painter.fillRect(self._square_rect(square), color)
 
+        if self.hint_square is not None:
+            painter.fillRect(self._square_rect(self.hint_square), HINT_SQUARE)
+
         king = self.board.king(self.board.turn)
         if self.board.is_check() and king is not None:
             rect = self._square_rect(king)
@@ -158,7 +171,35 @@ class BoardWidget(QWidget):
             rect.moveCenter(self.drag_pos)
             self._draw_piece(painter, piece, rect)
 
+        if self.arrow is not None:
+            self._draw_arrow(painter, self.arrow, size)
+
         self._draw_coordinates(painter, size, left, top, margin)
+
+    def _draw_arrow(self, painter: QPainter, move: chess.Move, size: float) -> None:
+        """A straight arrow from the center of one square to the center of another."""
+        start = self._square_rect(move.from_square).center()
+        end = self._square_rect(move.to_square).center()
+        delta = end - start
+        length = (delta.x() ** 2 + delta.y() ** 2) ** 0.5
+        if length == 0:
+            return
+        along = delta / length  # unit vector along the arrow
+        across = QPointF(-along.y(), along.x())  # unit vector at right angles to it
+        shaft, head, head_length = size * 0.09, size * 0.24, size * 0.45
+        neck = end - along * head_length
+        points = [
+            start + across * shaft,
+            neck + across * shaft,
+            neck + across * head,
+            end,
+            neck - across * head,
+            neck - across * shaft,
+            start - across * shaft,
+        ]
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(ARROW)
+        painter.drawPolygon(QPolygonF(points))
 
     def _draw_targets(self, painter: QPainter, size: float) -> None:
         """Highlight the selected piece and mark where it can go."""

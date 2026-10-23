@@ -29,7 +29,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..drill import Drill, TreeNode, Verdict
+from ..drill import Counts, Drill, Grade, NodeKind, Outcome, TreeNode, Verdict, format_move
+from ..progress import Progress, describe_wait
 from ..repertoire import Repertoire
 from ..settings import PgnFile, Settings
 from .board import BoardWidget
@@ -39,17 +40,21 @@ OPPONENT_DELAY_MS = 350  # pause before the opponent replies, so you see it happ
 WRONG_MOVE_MS = 700  # how long a rejected move stays on the board
 GREEN = "#2e7d32"
 RED = "#c62828"
+BLUE = "#1e6edc"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, progress: Progress) -> None:
         super().__init__()
         self.settings = settings
+        self.progress = progress
         self.repertoire = Repertoire()
-        self.drill = Drill(self.repertoire, chess.WHITE)
+        self.drill = Drill(self.repertoire, chess.WHITE, progress=Progress())
         self.review_node: TreeNode | None = None  # set while looking back at an earlier move
         self.last_attempt: TreeNode | None = None  # your latest rejected move, until you get it right
         self.showing_rejected = False  # a rejected move is on the board, about to be taken back
+        self.hint_level = 0  # 1: the piece to move is highlighted, 2: the move is shown
+        self.hint_move: chess.Move | None = None
         self.line_id = 0  # bumped for every new line, so timers left over from the last one do nothing
 
         self.setWindowTitle("Chess Opening Trainer")
@@ -71,6 +76,7 @@ class MainWindow(QMainWindow):
 
         shortcuts = [
             ("N", self._next_line),
+            ("H", self._hint),
             ("Left", self._review_back),
             ("Right", self._review_forward),
             ("End", self._resume),
@@ -99,6 +105,8 @@ class MainWindow(QMainWindow):
         self.side_combo.setCurrentIndex(0 if self.settings.side == "white" else 1)
         self.side_combo.currentIndexChanged.connect(self._on_side_changed)
 
+        self.hint_button = QPushButton("Hint (H)")
+        self.hint_button.clicked.connect(self._hint)
         self.resume_button = QPushButton("Resume (End)")
         self.resume_button.clicked.connect(self._resume)
         next_button = QPushButton("Next line (N)")
@@ -108,6 +116,7 @@ class MainWindow(QMainWindow):
         top.addWidget(QLabel("Play as"))
         top.addWidget(self.side_combo)
         top.addStretch()
+        top.addWidget(self.hint_button)
         top.addWidget(self.resume_button)
         top.addWidget(next_button)
 
@@ -151,6 +160,15 @@ class MainWindow(QMainWindow):
         self.max_moves_box.setValue(self.settings.max_moves)
         self.max_moves_box.valueChanged.connect(self._on_max_moves_changed)
 
+        self.new_per_day_box = QSpinBox()
+        self.new_per_day_box.setRange(0, 1000)
+        self.new_per_day_box.setValue(self.settings.new_per_day)
+        self.new_per_day_box.valueChanged.connect(self._on_new_per_day_changed)
+
+        self.learn_box = QCheckBox("Show me the move at positions I haven't met before")
+        self.learn_box.setChecked(self.settings.learn_new)
+        self.learn_box.toggled.connect(self._on_learn_toggled)
+
         self.opponent_mistakes_box = QCheckBox("Opponent sometimes plays the moves marked as mistakes")
         self.opponent_mistakes_box.setChecked(self.settings.opponent_mistakes)
         self.opponent_mistakes_box.toggled.connect(self._on_opponent_mistakes_toggled)
@@ -162,6 +180,8 @@ class MainWindow(QMainWindow):
         options = QGroupBox("Options")
         form = QFormLayout(options)
         form.addRow("Stop each game after (moves)", self.max_moves_box)
+        form.addRow("New positions per day", self.new_per_day_box)
+        form.addRow(self.learn_box)
         form.addRow(self.opponent_mistakes_box)
         form.addRow(self.hide_comments_box)
 
@@ -223,6 +243,18 @@ class MainWindow(QMainWindow):
         self.settings.save()
         self._reload_timer.start()
 
+    def _on_new_per_day_changed(self, value: int) -> None:
+        self.settings.new_per_day = value
+        self.settings.save()
+        self.drill.new_per_day = value
+        self._refresh()
+
+    def _on_learn_toggled(self, checked: bool) -> None:
+        self.settings.learn_new = checked
+        self.settings.save()
+        self.drill.learn_new = checked
+        self._refresh()
+
     def _on_opponent_mistakes_toggled(self, checked: bool) -> None:
         self.settings.opponent_mistakes = checked
         self.settings.save()
@@ -259,6 +291,9 @@ class MainWindow(QMainWindow):
         self.drill = Drill(
             self.repertoire,
             side,
+            progress=self.progress,
+            learn_new=self.settings.learn_new,
+            new_per_day=self.settings.new_per_day,
             opponent_mistakes=self.settings.opponent_mistakes,
             hide_opponent_comments=self.settings.hide_opponent_comments,
         )
@@ -274,9 +309,13 @@ class MainWindow(QMainWindow):
         self.review_node = None
         self.last_attempt = None
         self.showing_rejected = False
+        self.hint_level = 0
         self._show_live()
         self._refresh()
         self._opponent_turn_if_needed()
+
+    def _can_move(self) -> bool:
+        return self.drill.is_user_turn and not self.showing_rejected and self.review_node is None
 
     def _opponent_turn_if_needed(self) -> None:
         if self.drill.line_finished or self.drill.board.turn == self.drill.side:
@@ -295,6 +334,7 @@ class MainWindow(QMainWindow):
         node = self.drill.try_move(move)
         if node.played:
             self.last_attempt = None
+            self.hint_level = 0
             self._show_live()
             self._refresh()
             self._opponent_turn_if_needed()
@@ -317,6 +357,14 @@ class MainWindow(QMainWindow):
         self._show_live()
         self._refresh()
 
+    def _hint(self) -> None:
+        """First press: highlight the piece to move. Second press: show the move."""
+        if not self._can_move() or self.drill.teaching is not None:
+            return
+        self.hint_move = self.drill.hint()
+        self.hint_level = min(self.hint_level + 1, 2)
+        self._refresh()
+
     def _show_live(self, animate: bool = False) -> None:
         """Put the live position on the board, unless you're looking back at an earlier move."""
         if self.review_node is None:
@@ -329,7 +377,7 @@ class MainWindow(QMainWindow):
             self._resume()
             return
         self.review_node = node
-        self.board_view.set_position(chess.Board(node.fen), node.move, wrong=not node.played)
+        self.board_view.set_position(chess.Board(node.fen), node.move, wrong=node.kind is NodeKind.REJECTED)
         self._refresh()
 
     def _resume(self) -> None:
@@ -351,8 +399,11 @@ class MainWindow(QMainWindow):
         path = [self.drill.root] + self.drill.path()
         if node in path:  # on the live line: step towards the live position
             following = path[path.index(node) + 1]
-        else:  # on another line from earlier in the session
-            following = next((child for child in node.children if child.played), None)
+        else:  # on another line, or the line after a mistake
+            following = next(
+                (child for child in node.children if child.kind is not NodeKind.REJECTED and not self.drill.is_hidden(child)),
+                None,
+            )
         if following is not None:
             self._review(following)
 
@@ -360,21 +411,43 @@ class MainWindow(QMainWindow):
 
     def _refresh(self) -> None:
         drill = self.drill
-        can_move = drill.is_user_turn and not self.showing_rejected and self.review_node is None
+        can_move = self._can_move()
         self.board_view.set_user_color(drill.side if can_move else None)
-        self.feedback.setHtml(self._feedback_html())
-        self.tree_view.show_tree(drill.root, drill.current, self.review_node or drill.current)
+
+        arrow = square = None
+        teaching = drill.teaching if can_move else None
+        if teaching is not None:
+            arrow = teaching.move
+        elif can_move and self.hint_level == 2:
+            arrow = self.hint_move
+        elif can_move and self.hint_level == 1:
+            square = self.hint_move.from_square
+        self.board_view.set_guides(arrow, square)
+
+        counts = drill.counts()
+        self.feedback.setHtml(self._feedback_html(counts))
+        self.tree_view.show_tree(drill, self.review_node or drill.current)
         self.resume_button.setEnabled(self.review_node is not None)
+        self.hint_button.setEnabled(can_move and teaching is None)
 
         repertoire = self.repertoire
         files = sum(pgn.enabled for pgn in self.settings.files)
-        self.statusBar().showMessage(
+        status = (
             f"{files} file{'s' if files != 1 else ''}, {repertoire.game_count} games, "
             f"{repertoire.position_count} positions    |    "
-            f"Lines finished: {drill.lines_completed}, with no mistakes: {drill.lines_clean}"
+            f"Due: {counts.due}    New: {counts.new}    Learned: {counts.learned}"
         )
+        if counts.due == 0 and counts.next_due is not None:
+            status += f"    |    Next review in {describe_wait(counts.next_due - self.progress.now())}"
+        if self._free_practice(counts):
+            status += "    |    Free practice"
+        self.statusBar().showMessage(status)
 
-    def _feedback_html(self) -> str:
+    def _free_practice(self, counts: Counts) -> bool:
+        """Nothing is due and there are no new positions left for today."""
+        return counts.due == 0 and not (counts.new and self.drill.new_allowed)
+
+    def _feedback_html(self, counts: Counts) -> str:
         drill = self.drill
         if not self.repertoire.positions:
             return "<p>No repertoire loaded yet. Add some PGN files on the <b>Files</b> tab.</p>"
@@ -394,26 +467,41 @@ class MainWindow(QMainWindow):
             # Your most recent correct move: the last move, or the one before the opponent's reply.
             yours = next((node for node in reversed(path[-2:]) if node.verdict is Verdict.CORRECT), None)
             if yours is not None:
-                lines.append(_colored(GREEN, f"✓ <b>{html.escape(yours.label)}</b> is right."))
+                schedule = _schedule_text(drill.last_grade, self.progress)
+                lines.append(_colored(GREEN, f"✓ <b>{html.escape(yours.label)}</b> is right.") + schedule)
 
+        extra_notes = ""
         if drill.line_finished:
             side = "White" if drill.side == chess.WHITE else "Black"
             if not path:
                 lines.append(f"There's nothing to practice as {side} from here. Check the files and side you've chosen.")
-            elif drill.line_mistakes == 0:
-                lines.append(_colored(GREEN, "Line complete with no mistakes. Press N for the next line."))
             else:
-                attempts = f"{drill.line_mistakes} wrong attempt{'s' if drill.line_mistakes != 1 else ''}"
-                lines.append(f"Line complete ({attempts}). Press N for the next line.")
-        elif drill.is_user_turn and self.last_attempt is None:
+                if drill.line_mistakes == 0:
+                    done = _colored(GREEN, "Line complete with no mistakes.")
+                else:
+                    missed = f"{drill.line_mistakes} position{'s' if drill.line_mistakes != 1 else ''}"
+                    done = f"Line complete, with {missed} missed."
+                if self._free_practice(counts):
+                    done += " Nothing else is due, so further lines are free practice."
+                lines.append(done + " Press N for the next line.")
+        elif drill.is_user_turn:
             last = drill.current
-            if last.move is None:
-                lines.append("Your move.")
-            else:
-                lines.append(f"Opponent played <b>{html.escape(last.label)}</b>. Your move.")
+            played = "" if last.move is None else f"Opponent played <b>{html.escape(last.label)}</b>. "
+            teaching = drill.teaching
+            if teaching is not None:
+                label = html.escape(format_move(drill.board.fullmove_number, drill.board.turn, teaching.san))
+                lines.append(played + _colored(BLUE, f"New position: play <b>{label}</b>, shown by the arrow."))
+                if teaching.comments:
+                    extra_notes = f"<p><b>{label}</b> {html.escape(' '.join(teaching.comments))}</p>"
+            elif self.hint_level == 1:
+                lines.append(played + _colored(BLUE, "Hint: move the highlighted piece."))
+            elif self.hint_level == 2:
+                lines.append(played + _colored(BLUE, f"Hint: play <b>{html.escape(drill.board.san(self.hint_move))}</b>."))
+            elif self.last_attempt is None:
+                lines.append(played + "Your move.")
 
         notes = path[-2:] + ([self.last_attempt] if self.last_attempt else [])
-        return "".join(f"<p>{line}</p>" for line in lines) + _notes(notes)
+        return "".join(f"<p>{line}</p>" for line in lines) + _notes(notes) + extra_notes
 
     def closeEvent(self, event) -> None:
         self.settings.save()
@@ -422,6 +510,18 @@ class MainWindow(QMainWindow):
 
 def _colored(color: str, text: str) -> str:
     return f'<span style="color:{color}">{text}</span>'
+
+
+def _schedule_text(grade: Grade | None, progress: Progress) -> str:
+    """What your latest correct move did to that position's review schedule."""
+    if grade is None or grade.outcome is Outcome.NOT_DUE:
+        return ""
+    if grade.outcome is Outcome.FAILED:
+        return " You'll see this position again soon."
+    wait = describe_wait(grade.due - progress.now())
+    if grade.outcome is Outcome.LEARNED:
+        return f" First review in {wait}."
+    return f" Next review in {wait}."
 
 
 def _notes(nodes: list[TreeNode]) -> str:

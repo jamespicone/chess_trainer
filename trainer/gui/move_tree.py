@@ -2,8 +2,9 @@
 
 It's laid out like a PGN viewer. The line you're on runs along as a paragraph,
 rejected attempts sit inline in brackets, and other lines you've played this
-session branch off as indented paragraphs. Moves after the live position are
-left out, because they'd show you the answer.
+session branch off as indented paragraphs, as does the PGN's line after a
+mistake once you've found the right move. Anything that would show you an
+answer is left out (see Drill.is_hidden).
 """
 
 from __future__ import annotations
@@ -16,10 +17,11 @@ from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import QTextBrowser, QWidget
 
-from ..drill import TreeNode, Verdict
+from ..drill import Drill, NodeKind, TreeNode, Verdict
 
 MISTAKE_COLOR = "#c62828"
 NOT_IN_REPERTOIRE_COLOR = "#8a8a8a"
+REFUTATION_COLOR = "#7a7a7a"
 COMMENT_COLOR = "#5a7d9a"
 INDENT_PX = 18
 
@@ -33,8 +35,8 @@ class TreeColors(NamedTuple):
 class _Writer:
     """Builds the tree as a list of indented paragraphs."""
 
-    def __init__(self, current: TreeNode, highlighted: TreeNode | None, colors: TreeColors) -> None:
-        self.current = current
+    def __init__(self, drill: Drill, highlighted: TreeNode | None, colors: TreeColors) -> None:
+        self.drill = drill
         self.highlighted = highlighted
         self.colors = colors
         self.paragraphs: list[tuple[int, list[str]]] = [(0, [])]
@@ -58,6 +60,8 @@ class _Writer:
             styles = [f"color:{MISTAKE_COLOR}", "text-decoration:line-through"]
         elif node.verdict is Verdict.NOT_IN_REPERTOIRE:
             styles = [f"color:{NOT_IN_REPERTOIRE_COLOR}", "text-decoration:line-through"]
+        elif node.kind is NodeKind.REFUTATION:
+            styles = [f"color:{REFUTATION_COLOR}"]
         else:
             styles = [f"color:{self.colors.text}"]
         anchor = ""
@@ -84,10 +88,10 @@ class _Writer:
         )
 
 
-def render_tree(root: TreeNode, current: TreeNode, highlighted: TreeNode | None, colors: TreeColors) -> tuple[str, dict[str, TreeNode]]:
+def render_tree(drill: Drill, highlighted: TreeNode | None, colors: TreeColors) -> tuple[str, dict[str, TreeNode]]:
     """Return the tree as HTML, plus a map from each move's link to its node."""
-    writer = _Writer(current, highlighted, colors)
-    _write_line(writer, root, depth=0, numbered=True)
+    writer = _Writer(drill, highlighted, colors)
+    _write_line(writer, drill.root, depth=0, numbered=True)
     if not writer.links:
         return '<p style="color:gray">Your moves will appear here.</p>', {}
     return writer.html(), writer.links
@@ -96,23 +100,26 @@ def render_tree(root: TreeNode, current: TreeNode, highlighted: TreeNode | None,
 def _write_line(writer: _Writer, node: TreeNode, depth: int, numbered: bool) -> None:
     """Write the line that continues from node, branching off any other lines on the way."""
     while True:
-        # Nothing played after the live position is shown, only rejected attempts.
-        played = [child for child in node.children if child.played and node is not writer.current]
-        rejected = [child for child in node.children if not child.played]
-        if not played and not rejected:
+        visible = [child for child in node.children if not writer.drill.is_hidden(child)]
+        lines = [child for child in visible if child.kind is not NodeKind.REJECTED]
+        rejected = [child for child in visible if child.kind is NodeKind.REJECTED]
+        if not visible:
             return
 
-        main = played[0] if played else None
+        main = lines[0] if lines else None
         if main is not None:
             numbered = writer.move(main, numbered)
+        # A rejected attempt sits inline, unless the line after it is showing.
+        with_line = [attempt for attempt in rejected if any(not writer.drill.is_hidden(c) for c in attempt.children)]
         for attempt in rejected:
-            writer.move(attempt, numbered=True, brackets=True)
-            numbered = True
-        for other in played[1:]:
+            if attempt not in with_line:
+                writer.move(attempt, numbered=True, brackets=True)
+                numbered = True
+        for branch in with_line + lines[1:]:
             writer.new_paragraph(depth + 1)
-            _write_line(writer, other, depth + 1, writer.move(other, numbered=True))
+            _write_line(writer, branch, depth + 1, writer.move(branch, numbered=True))
             numbered = True
-        if len(played) > 1:
+        if with_line or len(lines) > 1:
             writer.new_paragraph(depth)  # carry on with the main line
         if main is None:
             return
@@ -135,14 +142,14 @@ class MoveTreeView(QTextBrowser):
         self.anchorClicked.connect(self._on_anchor_clicked)
         self._links: dict[str, TreeNode] = {}
 
-    def show_tree(self, root: TreeNode, current: TreeNode, highlighted: TreeNode | None) -> None:
+    def show_tree(self, drill: Drill, highlighted: TreeNode | None) -> None:
         palette = self.palette()
         colors = TreeColors(
             text=palette.color(QPalette.ColorRole.Text).name(),
             highlight=palette.color(QPalette.ColorRole.Highlight).name(),
             highlight_text=palette.color(QPalette.ColorRole.HighlightedText).name(),
         )
-        text, self._links = render_tree(root, current, highlighted, colors)
+        text, self._links = render_tree(drill, highlighted, colors)
         self.setHtml(text)
         self.scrollToAnchor("here")
 

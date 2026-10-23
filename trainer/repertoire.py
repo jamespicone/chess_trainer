@@ -53,6 +53,11 @@ def position_key(board: chess.Board) -> str:
     return board.epd()
 
 
+def side_to_move(key: str) -> chess.Color:
+    """The side to move in a position key (its second field is 'w' or 'b')."""
+    return key.split(" ")[1] == "w"
+
+
 def clean_comment(text: str) -> str:
     """Remove embedded [%...] commands and tidy up whitespace."""
     return " ".join(_COMMAND.sub(" ", text).split())
@@ -64,6 +69,7 @@ class RepertoireMove:
 
     move: chess.Move
     san: str
+    next_key: str  # the position after the move, for following lines without a board
     nags: set[int] = field(default_factory=set)
     comments: list[str] = field(default_factory=list)
 
@@ -161,9 +167,11 @@ class Repertoire:
         for index, child in enumerate(node.variations):
             if not child.move:
                 continue  # a null move ("--") has no place in a repertoire
+            san = board.san(child.move)
+            board.push(child.move)
             repertoire_move = entry.get(child.move)
             if repertoire_move is None:
-                repertoire_move = entry[child.move] = RepertoireMove(child.move, board.san(child.move))
+                repertoire_move = entry[child.move] = RepertoireMove(child.move, san, position_key(board))
             repertoire_move.nags |= child.nags
             before = intro if index == 0 else ""
             for text in (before, child.starting_comment, child.comment):
@@ -171,7 +179,6 @@ class Repertoire:
                 if text and text not in repertoire_move.comments:
                     repertoire_move.comments.append(text)
 
-            board.push(child.move)
             self._add_moves(child, board, ply + 1, max_ply)
             board.pop()
 
