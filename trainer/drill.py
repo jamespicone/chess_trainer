@@ -313,13 +313,14 @@ class Drill:
         """Choose from (option, position it leads to) pairs, at random but weighted towards
         positions due for review, then towards new ones while today's allowance lasts."""
         new_allowed = self.new_allowed
-        due_weights, new_weights = [], []
-        for _, key in options:
+        due_by_key, new_by_key = {}, {}
+        for key in {key for _, key in options}:  # most games share a starting position, so count each once
             cards = self._cards_from(key)
-            due_weights.append(sum(1 for card in cards if self.progress.is_due(card)))
-            new_weights.append(sum(1 for card in cards if card not in self.progress.cards) if new_allowed else 0)
+            due_by_key[key] = sum(1 for card in cards if self.progress.is_due(card))
+            new_by_key[key] = sum(1 for card in cards if card not in self.progress.cards) if new_allowed else 0
         choices = [option for option, _ in options]
-        for weights in (due_weights, new_weights):
+        for by_key in (due_by_key, new_by_key):
+            weights = [by_key[key] for _, key in options]
             if any(weights):
                 return self.rng.choices(choices, weights)[0]
         return self.rng.choice(choices)  # nothing due or new: free practice

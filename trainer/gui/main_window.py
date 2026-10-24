@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from ..drill import Counts, Drill, Grade, NodeKind, Outcome, TreeNode, Verdict, format_move
 from ..progress import Progress, describe_wait
-from ..repertoire import Repertoire
+from ..repertoire import Repertoire, RepertoireCache
 from ..settings import PgnFile, Settings
 from .board import BoardWidget
 from .move_tree import MoveTreeView
@@ -49,6 +49,7 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.progress = progress
         self.repertoire = Repertoire()
+        self.repertoire_cache = RepertoireCache()
         self.drill = Drill(self.repertoire, chess.WHITE, progress=Progress())
         self.review_node: TreeNode | None = None  # set while looking back at an earlier move
         self.last_attempt: TreeNode | None = None  # your latest rejected move, until you get it right
@@ -141,16 +142,24 @@ class MainWindow(QMainWindow):
         self.file_list = QListWidget()
         self.file_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.file_list.itemChanged.connect(self._on_file_toggled)
+        self.file_list.itemSelectionChanged.connect(self._on_file_selection_changed)
 
         add_button = QPushButton("Add files…")
         add_button.clicked.connect(self._add_files)
-        remove_button = QPushButton("Remove")
-        remove_button.clicked.connect(self._remove_files)
+        self.remove_button = QPushButton("Remove")
+        self.remove_button.clicked.connect(self._remove_files)
+        self.enable_button = QPushButton("Enable")
+        self.enable_button.clicked.connect(lambda: self._set_selected_enabled(True))
+        self.disable_button = QPushButton("Disable")
+        self.disable_button.clicked.connect(lambda: self._set_selected_enabled(False))
         reload_button = QPushButton("Reload (F5)")
         reload_button.clicked.connect(self._reload)
         buttons = QHBoxLayout()
         buttons.addWidget(add_button)
-        buttons.addWidget(remove_button)
+        buttons.addWidget(self.remove_button)
+        buttons.addSpacing(12)
+        buttons.addWidget(self.enable_button)
+        buttons.addWidget(self.disable_button)
         buttons.addStretch()
         buttons.addWidget(reload_button)
 
@@ -190,7 +199,12 @@ class MainWindow(QMainWindow):
 
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        layout.addWidget(QLabel("PGN files (untick one to leave it out)"))
+        files_label = QLabel(
+            "PGN files. Untick one to leave it out, or select several (Shift- or Ctrl-click) "
+            "and click Enable or Disable."
+        )
+        files_label.setWordWrap(True)
+        layout.addWidget(files_label)
         layout.addWidget(self.file_list, 2)
         layout.addLayout(buttons)
         layout.addWidget(options)
@@ -210,6 +224,12 @@ class MainWindow(QMainWindow):
             item.setCheckState(Qt.CheckState.Checked if pgn.enabled else Qt.CheckState.Unchecked)
             self.file_list.addItem(item)
         self.file_list.blockSignals(False)
+        self._on_file_selection_changed()
+
+    def _on_file_selection_changed(self) -> None:
+        selected = bool(self.file_list.selectedItems())
+        for button in (self.remove_button, self.enable_button, self.disable_button):
+            button.setEnabled(selected)
 
     def _add_files(self) -> None:
         start = str(Path(self.settings.files[-1].path).parent) if self.settings.files else str(Path.home())
@@ -235,6 +255,21 @@ class MainWindow(QMainWindow):
 
     def _on_file_toggled(self, item: QListWidgetItem) -> None:
         self.settings.files[self.file_list.row(item)].enabled = item.checkState() == Qt.CheckState.Checked
+        self.settings.save()
+        self._reload()
+
+    def _set_selected_enabled(self, enabled: bool) -> None:
+        """Tick or untick every selected file, then reload once."""
+        rows = [self.file_list.row(item) for item in self.file_list.selectedItems()]
+        changed = [row for row in rows if self.settings.files[row].enabled != enabled]
+        if not changed:
+            return
+        state = Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked
+        self.file_list.blockSignals(True)  # so _on_file_toggled doesn't reload after each one
+        for row in changed:
+            self.settings.files[row].enabled = enabled
+            self.file_list.item(row).setCheckState(state)
+        self.file_list.blockSignals(False)
         self.settings.save()
         self._reload()
 
@@ -275,10 +310,10 @@ class MainWindow(QMainWindow):
         self._new_session()
 
     def _reload(self) -> None:
-        """Read the ticked files again and start a fresh session."""
+        """Load the ticked files, parsing any that are new or have changed, and start a fresh session."""
         self._reload_timer.stop()
         paths = [pgn.path for pgn in self.settings.files if pgn.enabled]
-        self.repertoire = Repertoire.from_files(paths, self.settings.max_moves)
+        self.repertoire = self.repertoire_cache.load(paths, self.settings.max_moves)
         errors = self.repertoire.errors
         self.errors_box.setPlainText("\n\n".join(errors) if errors else "No problems found.")
         self.tabs.setTabText(1, f"Files ({len(errors)} problem{'s' if len(errors) != 1 else ''})" if errors else "Files")

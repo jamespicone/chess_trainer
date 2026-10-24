@@ -23,7 +23,11 @@ python -m venv .venv
 ```
 
 Go to the **Files** tab and click **Add files…** to add your PGNs. To try it
-out first, add the two files in `examples/`. The trainer keeps your files and
+out first, add the two files in `examples/`. Untick a file to leave it out.
+To switch several at once, select them (Shift- or Ctrl-click, or Ctrl+A for
+all) and click **Enable** or **Disable**. Each file is only parsed the first
+time it's loaded and again after you edit it, so switching files on and off
+is quick. The trainer keeps your files and
 options in `%USERPROFILE%\.chess_trainer\settings.json`, and your review
 schedule in `progress.json` in the same folder.
 

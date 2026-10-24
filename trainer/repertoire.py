@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import chess
@@ -125,6 +125,24 @@ class Repertoire:
                 label += f" ({event})"
             self._add_game(game, label, max_moves)
 
+    def merge(self, other: Repertoire) -> None:
+        """Add another repertoire's moves, as if its files had been loaded after this one's.
+
+        The moves are copied, so other is left unchanged.
+        """
+        for key, their_moves in other.positions.items():
+            entry = self.positions.setdefault(key, {})
+            for move, theirs in their_moves.items():
+                ours = entry.get(move)
+                if ours is None:
+                    entry[move] = replace(theirs, nags=set(theirs.nags), comments=list(theirs.comments))
+                else:
+                    ours.nags |= theirs.nags
+                    ours.comments += [text for text in theirs.comments if text not in ours.comments]
+        self.start_fens += other.start_fens
+        self.errors += other.errors
+        self.game_count += other.game_count
+
     def moves(self, board: chess.Board) -> list[RepertoireMove]:
         """Every move the PGNs give from this position, good and bad."""
         return list(self.positions.get(position_key(board), {}).values())
@@ -181,6 +199,35 @@ class Repertoire:
 
             self._add_moves(child, board, ply + 1, max_ply)
             board.pop()
+
+
+class RepertoireCache:
+    """Each file's moves, kept so that turning files on and off doesn't parse them all again.
+
+    A file is parsed again when it has changed on disk or the move limit is different.
+    """
+
+    def __init__(self) -> None:
+        # path -> ((modified time, size, max_moves), that file's repertoire)
+        self._files: dict[str, tuple[tuple[int, int, int], Repertoire]] = {}
+
+    def load(self, paths: list[str], max_moves: int = 0) -> Repertoire:
+        """The same as Repertoire.from_files, but only parses files that are new or have changed."""
+        repertoire = Repertoire()
+        for path in paths:
+            repertoire.merge(self._load_file(path, max_moves))
+        return repertoire
+
+    def _load_file(self, path: str, max_moves: int) -> Repertoire:
+        try:
+            info = Path(path).stat()
+        except OSError:
+            return Repertoire.from_files([path], max_moves)  # reports why it can't be read
+        stamp = (info.st_mtime_ns, info.st_size, max_moves)
+        cached = self._files.get(path)
+        if cached is None or cached[0] != stamp:
+            cached = self._files[path] = (stamp, Repertoire.from_files([path], max_moves))
+        return cached[1]
 
 
 def _read_text(path: Path) -> str:

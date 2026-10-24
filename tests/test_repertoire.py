@@ -1,6 +1,8 @@
+import os
+
 import chess
 
-from trainer.repertoire import Repertoire
+from trainer.repertoire import Repertoire, RepertoireCache
 
 
 def load(text: str, max_moves: int = 0) -> Repertoire:
@@ -78,3 +80,61 @@ def test_games_can_start_from_a_fen():
     repertoire = load(f'[SetUp "1"]\n[FEN "{fen}"]\n\n3... Bc5 *')
     assert repertoire.start_fens == [fen]
     assert sans(repertoire, chess.Board(fen)) == ["Bc5"]
+
+
+def test_merging_matches_loading_the_files_together(tmp_path):
+    first = tmp_path / "first.pgn"
+    second = tmp_path / "second.pgn"
+    first.write_text("1. e4! {Best by test.} e5 2. Nf3 *", encoding="utf-8")
+    second.write_text("1. e4? {I always lose with this.} c5 *", encoding="utf-8")
+    together = Repertoire.from_files([str(first), str(second)])
+
+    merged = Repertoire.from_files([str(first)])
+    merged.merge(Repertoire.from_files([str(second)]))
+    (move,) = merged.moves(chess.Board())
+    assert move.is_bad and move.comments == ["Best by test.", "I always lose with this."]
+    assert merged.positions == together.positions
+    assert merged.start_fens == together.start_fens
+    assert merged.game_count == together.game_count == 2
+
+
+def test_cache_only_parses_files_that_are_new_or_changed(tmp_path, monkeypatch):
+    first = tmp_path / "first.pgn"
+    second = tmp_path / "second.pgn"
+    first.write_text("1. e4! {Best by test.} *", encoding="utf-8")
+    second.write_text("1. e4? {I always lose with this.} *", encoding="utf-8")
+    paths = [str(first), str(second)]
+
+    parsed = []
+    add_file = Repertoire.add_file
+
+    def counting_add_file(self, path, max_moves=0):
+        parsed.append(os.path.basename(path))
+        add_file(self, path, max_moves)
+
+    monkeypatch.setattr(Repertoire, "add_file", counting_add_file)
+    cache = RepertoireCache()
+    assert cache.load(paths).moves(chess.Board())[0].is_bad
+    assert parsed == ["first.pgn", "second.pgn"]
+
+    # Turning a file off and on again doesn't parse anything, and merging
+    # didn't change the first file's cached moves.
+    (move,) = cache.load([str(first)]).moves(chess.Board())
+    assert not move.is_bad and move.comments == ["Best by test."]
+    cache.load(paths)
+    assert parsed == ["first.pgn", "second.pgn"]
+
+    # An edited file is parsed again, and so is everything when the move limit changes.
+    first.write_text("1. d4 *", encoding="utf-8")
+    stat = first.stat()
+    os.utime(first, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert sans(cache.load(paths), chess.Board()) == ["d4", "e4"]
+    assert parsed == ["first.pgn", "second.pgn", "first.pgn"]
+    cache.load(paths, max_moves=5)
+    assert parsed[3:] == ["first.pgn", "second.pgn"]
+
+
+def test_cache_reports_missing_files(tmp_path):
+    repertoire = RepertoireCache().load([str(tmp_path / "gone.pgn")])
+    (error,) = repertoire.errors
+    assert error.startswith("gone.pgn: could not read the file")
