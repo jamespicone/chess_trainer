@@ -36,7 +36,7 @@ class BoardWidget(QWidget):
         self.last_move_wrong = False
         self.selected: chess.Square | None = None
         self.drag_pos: QPointF | None = None  # where a dragged piece is drawn
-        self.arrow: chess.Move | None = None  # a move to show you
+        self.arrows: list[chess.Move] = []  # moves to show you
         self.hint_square: chess.Square | None = None  # a square to point out
 
         # python-chess comes with SVG pieces, so there are no image files to ship.
@@ -76,9 +76,9 @@ class BoardWidget(QWidget):
         self.orientation = color
         self.update()
 
-    def set_guides(self, arrow: chess.Move | None = None, square: chess.Square | None = None) -> None:
-        """Draw an arrow for a move and/or highlight a square, e.g. for a hint."""
-        self.arrow = arrow
+    def set_guides(self, arrows: list[chess.Move] | None = None, square: chess.Square | None = None) -> None:
+        """Draw an arrow for each of some moves and/or highlight a square, e.g. for a hint."""
+        self.arrows = arrows or []
         self.hint_square = square
         self.update()
 
@@ -171,8 +171,8 @@ class BoardWidget(QWidget):
             rect.moveCenter(self.drag_pos)
             self._draw_piece(painter, piece, rect)
 
-        if self.arrow is not None:
-            self._draw_arrow(painter, self.arrow, size)
+        for arrow in self.arrows:
+            self._draw_arrow(painter, arrow, size)
 
         self._draw_coordinates(painter, size, left, top, margin)
 

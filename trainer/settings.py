@@ -21,7 +21,7 @@ class Settings:
     side: str = "white"  # "white" or "black"
     max_moves: int = 0  # stop each game after this many moves; 0 for no limit
     new_per_day: int = 10
-    learn_new: bool = True  # show the move at positions you haven't met before
+    learn_new: bool = True  # show the good moves you haven't played yet
     opponent_mistakes: bool = True
     hide_opponent_comments: bool = True
     # Where to save; None means don't save (used by tests and scripts).

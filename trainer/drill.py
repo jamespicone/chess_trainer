@@ -14,7 +14,7 @@ from typing import TypeVar
 
 import chess
 
-from .progress import Progress
+from .progress import Card, Progress
 from .repertoire import Repertoire, RepertoireMove, position_key, side_to_move
 
 # How much of the PGN's line after a mistake gets attached to it.
@@ -129,7 +129,7 @@ class Drill:
         self.repertoire = repertoire
         self.side = side
         self.progress = progress or Progress()
-        self.learn_new = learn_new  # show you the move at a position you haven't met before
+        self.learn_new = learn_new  # show you the good moves you haven't played yet
         self.new_per_day = new_per_day
         self.opponent_mistakes = opponent_mistakes  # may the opponent play moves marked bad?
         self.hide_opponent_comments = hide_opponent_comments  # until you've replied
@@ -152,6 +152,7 @@ class Drill:
         self.line_mistakes = 0  # positions on this line you didn't get right first time
         self.last_grade: Grade | None = None  # how your latest correct move was scheduled
         self._failed_here = False  # already got the live position wrong on this line?
+        self._unplayed = self._unplayed_moves()
 
     # The state of play
 
@@ -167,11 +168,17 @@ class Drill:
         return not self._opponent_choices()
 
     @property
-    def teaching(self) -> RepertoireMove | None:
-        """In learn mode, the move to show you at a position you haven't met before."""
-        if not self.is_user_turn or not self._is_teaching(position_key(self.board)):
-            return None
-        return self.repertoire.good_moves(self.board)[0]
+    def teaching(self) -> list[RepertoireMove]:
+        """In learn mode, the good moves to show you with arrows: all of them at a position
+        you haven't met before, and at one that isn't due, those you haven't played there."""
+        if not self.learn_new or not self.is_user_turn:
+            return []
+        return self._unplayed
+
+    @property
+    def at_new_position(self) -> bool:
+        """True if you haven't met the live position before."""
+        return position_key(self.board) not in self.progress.cards
 
     @property
     def new_allowed(self) -> bool:
@@ -241,6 +248,7 @@ class Drill:
         node.revealed = True  # for a mistake, its comment is the lesson
         if verdict is Verdict.CORRECT:
             self.last_grade = self._record_success(key)
+            self.progress.played(key, move.uci())
             self.current.revealed = True  # the opponent's move you just answered
             self._advance(node)
         else:
@@ -280,6 +288,7 @@ class Drill:
     def _advance(self, node: TreeNode) -> None:
         self.board.push(node.move)
         self.current = node
+        self._unplayed = self._unplayed_moves()
         if self.line_finished:
             # Nothing left to give away, so show every comment on the line.
             for played in self.path():
@@ -287,15 +296,43 @@ class Drill:
 
     # Spaced repetition
 
-    def _is_teaching(self, key: str) -> bool:
-        return self.learn_new and key not in self.progress.cards
+    def _unplayed_moves(self) -> list[RepertoireMove]:
+        """The good moves you haven't played at the live position, if it's your move and isn't due.
+
+        Worked out when the position comes up, so a wrong answer at a due position
+        (which makes it due again in a few minutes) doesn't then show you the moves.
+        """
+        if self.board.turn != self.side:
+            return []
+        key = position_key(self.board)
+        good = self.repertoire.good_moves(self.board)
+        card = self.progress.cards.get(key)
+        if card is None:
+            return good
+        if card.due <= self.progress.now():
+            return []  # a review: an arrow would give the answer away
+        played = self._played_moves(key, card)
+        return [move for move in good if move.move.uci() not in played]
+
+    def _played_moves(self, key: str, card: Card) -> set[str]:
+        """The moves you've played at a position you've met, in UCI notation.
+
+        Progress saved before moves were recorded doesn't list them, so a move also
+        counts if you've met a position after the opponent's reply to it.
+        """
+        played = set(card.moves)
+        for move in self.repertoire.positions.get(key, {}).values():
+            replies = self.repertoire.positions.get(move.next_key, {}).values()
+            if any(reply.next_key in self.progress.cards for reply in replies):
+                played.add(move.move.uci())
+        return played
 
     def _record_success(self, key: str) -> Grade:
         failed, self._failed_here = self._failed_here, False
         card = self.progress.cards.get(key)
         if card is None:
             return Grade(Outcome.LEARNED, self.progress.learned(key).due)
-        if failed:
+        if failed and not self.teaching:  # a wrong attempt while you're being shown moves doesn't count
             return Grade(Outcome.FAILED, card.due)
         if card.due <= self.progress.now():
             return Grade(Outcome.PASSED, self.progress.passed(key).due)
@@ -307,7 +344,7 @@ class Drill:
             return
         self._failed_here = True
         self.line_mistakes += 1
-        if not self._is_teaching(key):  # while you're being shown the move, there's nothing to fail
+        if not self.teaching:  # while you're being shown moves, there's nothing to fail
             self.progress.failed(key)
 
     def _pick(self, options: list[tuple[T, str]]) -> T:

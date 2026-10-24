@@ -2,7 +2,9 @@
 
 A card is a position where it's your move and the repertoire has at least one
 good move: the test is "find a good move here". Cards are stored by position
-key, so editing or reorganizing PGN files doesn't lose your progress.
+key, so editing or reorganizing PGN files doesn't lose your progress. A card
+also remembers which good moves you've played there, so the trainer can show
+you the ones you haven't.
 
 Scheduling uses a fixed ladder of gaps. Getting a due position right first time
 moves it up a step; any wrong attempt (or a hint) sends it back to the bottom.
@@ -12,7 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -41,6 +43,7 @@ class Card:
     added: datetime  # when you first met this position
     reviews: int = 0
     lapses: int = 0  # times you got it wrong
+    moves: set[str] = field(default_factory=set)  # the good moves you've played here, in UCI notation (e2e4)
 
 
 class Progress:
@@ -63,6 +66,7 @@ class Progress:
                     added=datetime.fromisoformat(card["added"]),
                     reviews=card.get("reviews", 0),
                     lapses=card.get("lapses", 0),
+                    moves=set(card.get("moves", [])),  # not saved before version 2
                 )
         except FileNotFoundError:
             pass
@@ -82,13 +86,14 @@ class Progress:
                 "added": card.added.isoformat(timespec="seconds"),
                 "reviews": card.reviews,
                 "lapses": card.lapses,
+                "moves": sorted(card.moves),
             }
             for key, card in self.cards.items()
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Write to a temporary file first so a crash can't leave a half-written file.
         temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"version": 1, "cards": cards}, indent=1), encoding="utf-8")
+        temporary.write_text(json.dumps({"version": 2, "cards": cards}, indent=1), encoding="utf-8")
         temporary.replace(self.path)
 
     def now(self) -> datetime:
@@ -131,6 +136,13 @@ class Progress:
         card.lapses += 1
         self.save()
         return card
+
+    def played(self, key: str, move: str) -> None:
+        """Remember that you've played this good move (in UCI notation) at a position you've met."""
+        card = self.cards[key]
+        if move not in card.moves:
+            card.moves.add(move)
+            self.save()
 
 
 def describe_wait(wait: timedelta) -> str:

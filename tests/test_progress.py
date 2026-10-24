@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 
 from trainer.progress import INTERVALS, RETRY_AFTER, Progress, describe_wait
@@ -58,10 +59,19 @@ def test_saving_and_loading(tmp_path):
     progress = Progress(path)
     progress.learned("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -")
     progress.failed("another")
+    progress.played("another", "e2e4")
     loaded = Progress.load(path)
     assert loaded.cards.keys() == progress.cards.keys()
     assert loaded.cards["another"].step == -1
     assert loaded.cards["another"].due == progress.cards["another"].due.replace(microsecond=0)
+    assert loaded.cards["another"].moves == {"e2e4"}
+
+
+def test_a_file_saved_before_moves_were_recorded_still_loads(tmp_path):
+    path = tmp_path / "progress.json"
+    card = {"step": 0, "due": "2026-01-01T13:00:00", "added": "2026-01-01T09:00:00", "reviews": 0, "lapses": 0}
+    path.write_text(json.dumps({"version": 1, "cards": {"position": card}}), encoding="utf-8")
+    assert Progress.load(path).cards["position"].moves == set()
 
 
 def test_a_damaged_file_is_kept_aside(tmp_path):

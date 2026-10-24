@@ -174,7 +174,7 @@ class MainWindow(QMainWindow):
         self.new_per_day_box.setValue(self.settings.new_per_day)
         self.new_per_day_box.valueChanged.connect(self._on_new_per_day_changed)
 
-        self.learn_box = QCheckBox("Show me the move at positions I haven't met before")
+        self.learn_box = QCheckBox("Show me the moves I haven't played yet")
         self.learn_box.setChecked(self.settings.learn_new)
         self.learn_box.toggled.connect(self._on_learn_toggled)
 
@@ -394,7 +394,7 @@ class MainWindow(QMainWindow):
 
     def _hint(self) -> None:
         """First press: highlight the piece to move. Second press: show the move."""
-        if not self._can_move() or self.drill.teaching is not None:
+        if not self._can_move() or self.drill.teaching:
             return
         self.hint_move = self.drill.hint()
         self.hint_level = min(self.hint_level + 1, 2)
@@ -449,21 +449,21 @@ class MainWindow(QMainWindow):
         can_move = self._can_move()
         self.board_view.set_user_color(drill.side if can_move else None)
 
-        arrow = square = None
-        teaching = drill.teaching if can_move else None
-        if teaching is not None:
-            arrow = teaching.move
+        arrows, square = [], None
+        teaching = drill.teaching if can_move else []
+        if teaching:
+            arrows = [move.move for move in teaching]
         elif can_move and self.hint_level == 2:
-            arrow = self.hint_move
+            arrows = [self.hint_move]
         elif can_move and self.hint_level == 1:
             square = self.hint_move.from_square
-        self.board_view.set_guides(arrow, square)
+        self.board_view.set_guides(arrows, square)
 
         counts = drill.counts()
         self.feedback.setHtml(self._feedback_html(counts))
         self.tree_view.show_tree(drill, self.review_node or drill.current)
         self.resume_button.setEnabled(self.review_node is not None)
-        self.hint_button.setEnabled(can_move and teaching is None)
+        self.hint_button.setEnabled(can_move and not teaching)
 
         repertoire = self.repertoire
         files = sum(pgn.enabled for pgn in self.settings.files)
@@ -523,11 +523,22 @@ class MainWindow(QMainWindow):
             last = drill.current
             played = "" if last.move is None else f"Opponent played <b>{html.escape(last.label)}</b>. "
             teaching = drill.teaching
-            if teaching is not None:
-                label = html.escape(format_move(drill.board.fullmove_number, drill.board.turn, teaching.san))
-                lines.append(played + _colored(BLUE, f"New position: play <b>{label}</b>, shown by the arrow."))
-                if teaching.comments:
-                    extra_notes = f"<p><b>{label}</b> {html.escape(' '.join(teaching.comments))}</p>"
+            if teaching:
+                labels = [html.escape(format_move(drill.board.fullmove_number, drill.board.turn, move.san)) for move in teaching]
+                bold = [f"<b>{label}</b>" for label in labels]
+                arrows = "the arrow" if len(teaching) == 1 else "the arrows"
+                if drill.at_new_position:
+                    text = f"New position: play {_join(bold, 'or')}, shown by {arrows}."
+                elif len(teaching) == 1:
+                    text = f"There's a move here you haven't played yet: {bold[0]}, shown by the arrow."
+                else:
+                    text = f"There are moves here you haven't played yet: {_join(bold, 'and')}, shown by the arrows."
+                lines.append(played + _colored(BLUE, text))
+                extra_notes = "".join(
+                    f"<p><b>{label}</b> {html.escape(' '.join(move.comments))}</p>"
+                    for label, move in zip(labels, teaching)
+                    if move.comments
+                )
             elif self.hint_level == 1:
                 lines.append(played + _colored(BLUE, "Hint: move the highlighted piece."))
             elif self.hint_level == 2:
@@ -545,6 +556,13 @@ class MainWindow(QMainWindow):
 
 def _colored(color: str, text: str) -> str:
     return f'<span style="color:{color}">{text}</span>'
+
+
+def _join(items: list[str], word: str) -> str:
+    """'a', 'a or b', 'a, b or c'."""
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} {word} {items[-1]}"
 
 
 def _schedule_text(grade: Grade | None, progress: Progress) -> str:

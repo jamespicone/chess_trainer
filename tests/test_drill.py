@@ -178,19 +178,20 @@ def test_new_position_is_taught_then_learned():
     clock = Clock()
     progress = Progress(clock=clock)
     drill = make_drill(chess.WHITE, progress=progress)
-    assert drill.teaching.san == "e4"
+    assert [move.san for move in drill.teaching] == ["e4"]
     # A wrong move while being taught doesn't count against you.
     drill.try_move(uci("d2d4"))
     assert progress.cards == {}
     drill.try_move(uci("e2e4"))
     assert drill.last_grade.outcome is Outcome.LEARNED
     assert progress.cards[key_after()].due == clock.time + INTERVALS[0]
+    assert progress.cards[key_after()].moves == {"e2e4"}
 
 
 def test_without_teaching_a_new_position_can_be_failed():
     progress = Progress()
     drill = make_drill(chess.WHITE, progress=progress, learn_new=False)
-    assert drill.teaching is None
+    assert drill.teaching == []
     drill.try_move(uci("d2d4"))
     assert progress.cards[key_after()].step == -1
     drill.try_move(uci("e2e4"))
@@ -226,11 +227,63 @@ def test_position_not_yet_due_keeps_its_schedule_when_right_but_fails_when_wrong
 def test_hint_counts_as_a_mistake():
     progress = Progress()
     progress.learned(key_after())
+    progress.played(key_after(), "e2e4")
     drill = make_drill(chess.WHITE, progress=progress)
     assert drill.hint() == uci("e2e4")
     assert progress.cards[key_after()].step == -1
     drill.try_move(uci("e2e4"))
     assert drill.last_grade.outcome is Outcome.FAILED
+
+
+# Moves you haven't played
+
+TWO_MOVES = "1. e4 {King's pawn.} (1. d4 {Queen's pawn.} d5 2. c4) (1. f3?) 1... e5 2. Nf3 *"
+
+
+def test_new_position_shows_every_good_move():
+    drill = make_drill(chess.WHITE, TWO_MOVES)
+    assert drill.at_new_position
+    assert [move.san for move in drill.teaching] == ["e4", "d4"]
+
+
+def test_move_you_havent_played_is_shown_when_the_position_isnt_due():
+    progress = Progress(clock=Clock())
+    drill = make_drill(chess.WHITE, TWO_MOVES, progress=progress)
+    drill.try_move(uci("e2e4"))
+
+    drill.new_line()
+    assert not drill.at_new_position
+    assert [move.san for move in drill.teaching] == ["d4"]
+    drill.try_move(uci("g2g4"))  # a wrong move while you're being shown one doesn't count
+    assert progress.cards[key_after()].step == 0
+    drill.try_move(uci("d2d4"))
+    assert drill.last_grade.outcome is Outcome.NOT_DUE
+    assert progress.cards[key_after()].moves == {"e2e4", "d2d4"}
+
+    drill.new_line()
+    assert drill.teaching == []
+
+
+def test_no_arrows_at_a_due_position_even_after_a_wrong_answer():
+    clock = Clock()
+    progress = Progress(clock=clock)
+    progress.learned(key_after())
+    progress.played(key_after(), "e2e4")
+    clock.time += INTERVALS[0]
+    drill = make_drill(chess.WHITE, TWO_MOVES, progress=progress)
+    assert drill.teaching == []  # showing 1. d4 would give an answer away
+    drill.try_move(uci("g2g4"))
+    # The position isn't due any more (it's back in a few minutes), but this is still a review.
+    assert not progress.is_due(key_after())
+    assert drill.teaching == []
+
+
+def test_moves_played_before_they_were_recorded_are_worked_out():
+    progress = Progress()
+    progress.learned(key_after())
+    progress.learned(key_after("e4", "e5"))  # you can only have got here by playing 1. e4
+    drill = make_drill(chess.WHITE, TWO_MOVES, progress=progress)
+    assert [move.san for move in drill.teaching] == ["d4"]
 
 
 def test_opponent_steers_towards_due_positions():

@@ -70,10 +70,18 @@ lose it.
   neither left, lines are chosen at random as free practice. A branch with
   more lines comes up more often, but only by the square root: a main line
   with 100 lines comes up 10 times as often as a one-move sideline, not 100.
-- **New positions:** the first time you meet a position, an arrow shows you
-  the move along with its comment, and you play it. Untick **Show me the move
-  at positions I haven't met before** if you'd rather be tested on new
-  positions straight away.
+- **New positions:** the first time you meet a position, arrows show you
+  every good move there, with their comments, and you play one of them.
+- **Moves you haven't played:** when you come back to a position that isn't
+  due, arrows show the good moves you haven't played there yet, so the lines
+  after them get practised too. You can still play a move you know. Arrows
+  never appear at a due position, because they'd give the answer away, and a
+  wrong move while arrows are showing doesn't count against you. Progress
+  saved by older versions of the trainer doesn't record your moves, so for
+  that a move counts as played if you've met a position after the opponent's
+  reply to it.
+- Untick **Show me the moves I haven't played yet** if you'd rather be tested
+  on new positions straight away and never see the arrows.
 - **The schedule:** a due position you get right first time moves up the
   ladder of gaps: 4 hours, 1 day, 3 days, 1 week, 2 weeks, 1 month,
   3 months, 6 months. A wrong attempt or a hint sends it back to the start,
