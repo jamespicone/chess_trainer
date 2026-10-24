@@ -67,7 +67,9 @@ lose it.
 - **Choosing lines:** the opponent's moves steer towards positions that are
   due for review. If nothing is due, they steer towards positions you haven't
   met yet, up to **New positions per day** (Files tab, default 10). With
-  neither left, lines are chosen at random as free practice.
+  neither left, lines are chosen at random as free practice. A branch with
+  more lines comes up more often, but only by the square root: a main line
+  with 100 lines comes up 10 times as often as a one-move sideline, not 100.
 - **New positions:** the first time you meet a position, an arrow shows you
   the move along with its comment, and you play it. Untick **Show me the move
   at positions I haven't met before** if you'd rather be tested on new

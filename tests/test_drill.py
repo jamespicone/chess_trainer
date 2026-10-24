@@ -254,3 +254,15 @@ def test_free_practice_when_nothing_is_due_or_new():
     assert not drill.new_allowed
     replies = {play_to_move_two_for_black(make_drill(chess.WHITE, seed=seed, progress=Progress(), new_per_day=0)) for seed in range(30)}
     assert replies == {"Nc6", "f6", "d6"}
+
+
+def test_free_practice_favours_branches_with_more_lines_by_the_square_root():
+    # 1... e5 leads to four lines and 1... c5 to one, so c5 should come up a third of
+    # the time: less than the half it would get at random, more than a fifth by line.
+    pgn = "1. e4 e5 (1... c5 2. Nf3) 2. Nf3 Nc6 (2... d6 3. d4) (2... f6 3. Nxe5) (2... Nf6 3. Nxe5) 3. Bc4 *"
+    replies = []
+    for seed in range(300):
+        drill = make_drill(chess.WHITE, pgn, seed=seed, new_per_day=0)
+        drill.try_move(uci("e2e4"))
+        replies.append(drill.play_opponent_move().san)
+    assert 0.27 < replies.count("c5") / len(replies) < 0.40

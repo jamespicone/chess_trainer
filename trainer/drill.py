@@ -5,6 +5,7 @@ There is no GUI code here, so the rules can be read and tested on their own.
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -311,7 +312,8 @@ class Drill:
 
     def _pick(self, options: list[tuple[T, str]]) -> T:
         """Choose from (option, position it leads to) pairs, at random but weighted towards
-        positions due for review, then towards new ones while today's allowance lasts."""
+        positions due for review, then towards new ones while today's allowance lasts, then
+        towards branches with more lines."""
         new_allowed = self.new_allowed
         due_by_key, new_by_key = {}, {}
         for key in {key for _, key in options}:  # most games share a starting position, so count each once
@@ -323,27 +325,37 @@ class Drill:
             weights = [by_key[key] for _, key in options]
             if any(weights):
                 return self.rng.choices(choices, weights)[0]
-        return self.rng.choice(choices)  # nothing due or new: free practice
+        # Nothing due or new: free practice. A branch with more lines comes up more often, but
+        # only by the square root, so a one-move sideline isn't drowned out by the main line.
+        size_by_key = {key: math.sqrt(self._line_count(key)) for key in due_by_key}
+        return self.rng.choices(choices, [size_by_key[key] for _, key in options])[0]
 
     def _cards_from(self, start: str) -> set[str]:
         """Your positions reachable from this one: wherever it's your move and the repertoire has a good move."""
-        cards = set()
+        return {key for key in self._reachable(start) if side_to_move(key) == self.side and self._next_moves(key)}
+
+    def _line_count(self, start: str) -> int:
+        """How many lines go on from this position, counting each position where a line ends once."""
+        ends = sum(1 for key in self._reachable(start) if not self._next_moves(key))
+        return max(ends, 1)  # lines that only go round in a circle never end
+
+    def _reachable(self, start: str) -> set[str]:
+        """Every position a line can reach from this one, including itself."""
         seen = {start}
         waiting = [start]
         while waiting:
-            key = waiting.pop()
-            moves = list(self.repertoire.positions.get(key, {}).values())
-            if side_to_move(key) == self.side:
-                moves = [move for move in moves if not move.is_bad]
-                if moves:
-                    cards.add(key)
-            elif not self.opponent_mistakes:
-                moves = [move for move in moves if not move.is_bad]
-            for move in moves:
+            for move in self._next_moves(waiting.pop()):
                 if move.next_key not in seen:
                     seen.add(move.next_key)
                     waiting.append(move.next_key)
-        return cards
+        return seen
+
+    def _next_moves(self, key: str) -> list[RepertoireMove]:
+        """The moves a line can go on with: your good moves, or the opponent's moves (bad ones only if allowed)."""
+        moves = list(self.repertoire.positions.get(key, {}).values())
+        if side_to_move(key) == self.side or not self.opponent_mistakes:
+            moves = [move for move in moves if not move.is_bad]
+        return moves
 
     # The move tree
 
